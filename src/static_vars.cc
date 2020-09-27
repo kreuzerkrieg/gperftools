@@ -35,6 +35,11 @@
 #include "static_vars.h"
 #include <stddef.h>                     // for NULL
 #include <new>                          // for operator new
+
+#include <sys/mman.h>
+#include <fcntl.h>
+#include <unistd.h>
+
 #ifdef HAVE_PTHREAD
 #include <pthread.h>                    // for pthread_atfork
 #endif
@@ -44,6 +49,67 @@
 #include "getenv_safe.h"       // TCMallocGetenvSafe
 #include "base/googleinit.h"
 #include "maybe_threads.h"
+
+static std::tuple<uint8_t *, size_t> getHugeMem()
+{
+    remove("/mnt/hugetlbfs-1G/ClickHouse");
+
+    size_t total_hugepages = 0;
+    size_t free_hugepages = 0;
+    {
+        char buf[512] = {'\0'};
+        auto fd = open("/sys/kernel/mm/hugepages/hugepages-1048576kB/nr_hugepages", O_RDONLY);
+        auto len = read(fd, buf, 512);
+        close(fd);
+        total_hugepages = std::atoi(buf);
+        CHECK_CONDITION(total_hugepages > 0);
+    }
+    {
+        char buf[512] = {'\0'};
+        auto fd = open("/sys/kernel/mm/hugepages/hugepages-1048576kB/free_hugepages", O_RDONLY);
+        auto len = read(fd, buf, 512);
+        close(fd);
+        free_hugepages = std::atoi(buf);
+        CHECK_CONDITION(free_hugepages > 0);
+    }
+
+    if (free_hugepages != total_hugepages)
+    {
+        ::tcmalloc::Log(
+            ::tcmalloc::kCrash,
+            __FILE__,
+            __LINE__,
+            "Looks like there is leftovers in 1GiB hugepages memory. Remove any 'ClickHouse' files under /mnt/hugetlbfs-1G/. (expected, "
+            "free)",
+            total_hugepages,
+            free_hugepages);
+    }
+    uint8_t * const base_address = reinterpret_cast<uint8_t *>(0x40000000000);
+    size_t size = free_hugepages * 1024 * 1024 * 1024;
+
+    int fd = -1;
+
+    fd = open("/mnt/hugetlbfs-1G/ClickHouse", O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
+    if (fd == -1)
+    {
+        auto err = std::strerror(errno);
+        ::tcmalloc::Log(::tcmalloc::kCrash, __FILE__, __LINE__, "Failed to open shared memory. Reason: ", err);
+    }
+
+    auto res = ftruncate(fd, size);
+    if (res == -1)
+    {
+        auto err = std::strerror(errno);
+        ::tcmalloc::Log(::tcmalloc::kCrash, __FILE__, __LINE__, "Truncating shared memory file to size failed. (size, reason)", size, err);
+    }
+
+    // int flags = MAP_ANONYMOUS | MAP_PRIVATE | MAP_FIXED | MAP_HUGETLB;
+    int flags = MAP_FIXED | MAP_SHARED;
+    void * arena = mmap(base_address, size, PROT_READ | PROT_WRITE, flags, fd, 0);
+    CHECK_CONDITION(arena == base_address);
+    close(fd);
+    return {reinterpret_cast<uint8_t *>(arena), size};
+}
 
 namespace tcmalloc {
 
@@ -78,6 +144,10 @@ StackTrace* Static::growth_stacks_ = NULL;
 Static::PageHeapStorage Static::pageheap_;
 
 void Static::InitStaticVars() {
+  auto&& [huge_address, huge_size] = getHugeMem();
+  current_ptr_ = base_ptr_ = huge_address;
+  hugemem_size_ = huge_size;
+
   sizemap_.Init();
   span_allocator_.Init();
   span_allocator_.New(); // Reduce cache conflicts

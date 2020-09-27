@@ -55,6 +55,7 @@
 #include "base/spinlock.h"              // for SpinLockHolder, SpinLock, etc
 #include "common.h"
 #include "internal_logging.h"
+#include "static_vars.h"
 
 // On systems (like freebsd) that don't define MAP_ANONYMOUS, use the old
 // form of the name instead.
@@ -306,19 +307,24 @@ void* MmapSysAllocator::Alloc(size_t size, size_t *actual_size,
   }
 
   // Ask for extra memory if alignment > pagesize
-  size_t extra = 0;
+  /*size_t extra = 0;
   if (alignment > pagesize) {
     extra = alignment - pagesize;
-  }
+  }*/
 
   // Note: size + extra does not overflow since:
   //            size + alignment < (1<<NBITS).
   // and        extra <= alignment
   // therefore  size + extra < (1<<NBITS)
-  void* result = mmap(NULL, size + extra,
+  /*void* result = mmap(NULL, size + extra,
                       PROT_READ|PROT_WRITE,
                       MAP_PRIVATE|MAP_ANONYMOUS,
-                      -1, 0);
+                      -1, 0);*/
+  uint8_t* result = tcmalloc::Static::current_ptr_;
+  CHECK_CONDITION(result + size < tcmalloc::Static::base_ptr_ + tcmalloc::Static::hugemem_size_);
+
+  tcmalloc::Static::current_ptr_ += size;
+  /*
   if (result == reinterpret_cast<void*>(MAP_FAILED)) {
     return NULL;
   }
@@ -338,8 +344,8 @@ void* MmapSysAllocator::Alloc(size_t size, size_t *actual_size,
     munmap(reinterpret_cast<void*>(ptr + adjust + size), extra - adjust);
   }
 
-  ptr += adjust;
-  return reinterpret_cast<void*>(ptr);
+  ptr += adjust;*/
+  return result;
 #endif  // HAVE_MMAP
 }
 
@@ -511,6 +517,7 @@ void* TCMalloc_SystemAlloc(size_t size, size_t *actual_size,
 }
 
 bool TCMalloc_SystemRelease(void* start, size_t length) {
+  return false;
 #ifdef MADV_FREE
   if (FLAGS_malloc_devmem_start) {
     // It's not safe to use MADV_FREE/MADV_DONTNEED if we've been

@@ -87,6 +87,10 @@ class Static {
   // Check if InitStaticVars() has been run.
   static bool IsInited() { return inited_; }
 
+  static inline uint8_t* base_ptr_ = nullptr;
+  static inline uint8_t* current_ptr_ = nullptr;
+  static inline size_t hugemem_size_ = 0;
+
  private:
   // some unit tests depend on this and link to static vars
   // imperfectly. Thus we keep those unhidden for now. Thankfully
